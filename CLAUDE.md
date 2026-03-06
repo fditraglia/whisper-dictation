@@ -54,6 +54,16 @@ Hammerspoon (Lua)
   init.lua strips these before typing text
 - Model auto-punctuates (commas, periods, question marks)
 
+## TODO
+
+- **Silence hallucinations**: whisper hallucinates "Thank you", "Thanks for watching",
+  etc. during silence (trained on YouTube subtitles). Try enabling VAD mode or raising
+  `--vad-thold` to suppress transcription when no speech is detected.
+- **Keep model loaded**: optionally keep whisper-stream resident to avoid cold start
+  delay. Low priority — subsequent launches are faster due to macOS shader caching.
+- **Chunk tuning**: experiment with `--step` and `--length` values to balance latency
+  vs. transcription quality.
+
 ## Conventions
 
 - Keep it simple — this is a small tool, not a framework
