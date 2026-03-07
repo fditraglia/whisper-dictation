@@ -56,13 +56,26 @@ Hammerspoon (Lua)
 
 ## TODO
 
-- **Silence hallucinations**: whisper hallucinates "Thank you", "Thanks for watching",
-  etc. during silence (trained on YouTube subtitles). Try enabling VAD mode or raising
-  `--vad-thold` to suppress transcription when no speech is detected.
-- **Keep model loaded**: optionally keep whisper-stream resident to avoid cold start
-  delay. Low priority — subsequent launches are faster due to macOS shader caching.
 - **Chunk tuning**: experiment with `--step` and `--length` values to balance latency
-  vs. transcription quality.
+  vs. transcription quality. Larger steps give the model more context (fewer
+  within-chunk artifacts like "artist artist's") but delay output.
+- **Corrections dictionary**: a simple text file mapping common mistranscriptions
+  to correct words (e.g., proper names). Applied as post-processing before typing.
+  Similar to what Wispr Flow calls "vocabulary learning" — no model fine-tuning,
+  just string replacement.
+- **System audio transcription**: capture system audio (e.g., a Zoom call) via
+  BlackHole virtual audio device. Likely a separate mode that writes to a file
+  rather than typing into the active app. Low priority — for meetings, simpler to
+  record in Zoom and run whisper-cli on the file afterward.
+
+## Decided against
+
+- **Silence hallucinations blocklist**: whisper hallucinates "Thank you" etc. during
+  silence. Considered filtering these in Lua but it's kludgy. Better to just stop
+  dictation when not speaking (Ctrl+D to toggle off).
+- **VAD mode**: whisper-stream's VAD mode (`--step 0`) is designed for isolated speech
+  detection, not continuous dictation. It grabs overlapping 10-second windows every
+  2 seconds, causing massive duplication for continuous speech.
 
 ## Conventions
 
