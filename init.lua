@@ -168,7 +168,7 @@ local function startStream()
         "--step", "3000",
         "--length", "10000",
         "--keep", "200",
-        "-l", "en",
+        "-l", "auto",
     }
 
     streamTask = hs.task.new(STREAM_BIN, function(exitCode, _, _)
@@ -267,7 +267,7 @@ local function stopBatch()
             "-m", MODEL_PATH,
             "-f", AUDIO_FILE,
             "--no-timestamps",
-            "-l", "en",
+            "-l", "auto",
         }
 
         hs.task.new(WHISPER_CLI, function(exitCode, stdout, stderr)
