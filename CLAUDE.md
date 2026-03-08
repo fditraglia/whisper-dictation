@@ -7,26 +7,33 @@ in whatever app has focus. Powered by whisper.cpp (local, open-source, private).
 
 ## Architecture
 
+Two modes, both orchestrated by Hammerspoon (Lua):
+
 ```
-Hammerspoon (Lua)
-  ├── hotkey bind → start/stop dictation
-  ├── spawn whisper.cpp stream binary
-  ├── read stdout line by line
-  └── hs.eventtap.keyStrokes() → type text into active app
+Streaming (Ctrl+D):
+  Hammerspoon → whisper-stream (SDL2 mic capture) → stdout → keyStrokes
+
+Batch (Ctrl+Shift+D):
+  Hammerspoon → ffmpeg (record to wav) → whisper-cli (transcribe) → keyStrokes
 ```
 
 ### Components
 
-1. **whisper.cpp stream binary** (`whisper-stream`) — lives at `~/whisper.cpp/build/bin/`
-   - Source: `~/whisper.cpp/examples/stream/stream.cpp`
-   - Continuously captures mic audio via SDL2, transcribes in chunks, prints to stdout
-   - Has built-in VAD (voice activity detection) mode
+1. **whisper-stream** — `~/whisper.cpp/build/bin/whisper-stream`
+   - Captures mic via SDL2, transcribes in ~6-second chunks, prints to stdout
+   - Used for streaming mode
 
-2. **Hammerspoon** (https://www.hammerspoon.org/) — macOS automation
-   - Scriptable in Lua; provides hotkey binding, process spawning, simulated keystrokes
+2. **whisper-cli** — `~/whisper.cpp/build/bin/whisper-cli`
+   - Transcribes a complete audio file in one pass with full context
+   - Used for batch mode (~4 seconds per minute of audio on M4 Max)
+
+3. **ffmpeg** — records mic audio to wav file for batch mode
+
+4. **Hammerspoon** (https://www.hammerspoon.org/) — macOS automation
+   - Hotkey binding, process spawning, simulated keystrokes, menubar icon
    - Config lives at `~/.hammerspoon/init.lua`
 
-3. **This repo** — glue scripts, config, documentation
+5. **This repo** — Hammerspoon config, documentation
 
 ## Francis's setup
 
@@ -36,11 +43,12 @@ Hammerspoon (Lua)
 
 ## Design decisions
 
-- **Hotkey**: Ctrl+D (replaces macOS dictation — must disable system dictation shortcut first)
-- **Toggle mode**: press Ctrl+D to start, press again to stop
-- **Visual feedback**: menubar icon shows state (idle / loading / listening)
-- **Process lifecycle**: whisper-stream is spawned on first Ctrl+D, killed on second press.
-  "Quit Whisper" in menubar fully kills it to free RAM (~3 GB).
+- **Hotkeys**: Ctrl+D for streaming, Ctrl+Shift+D for batch
+- **Toggle mode**: press to start, press again to stop (both modes)
+- **Visual feedback**: menubar icon shows state (idle / loading / streaming / recording)
+- **Batch mode rationale**: streaming has inherent chunk boundary issues (duplicated
+  words, limited context). Batch transcribes the full recording in one pass — higher
+  quality, simpler code, ~4s/min processing delay is acceptable.
 
 ## Key files
 
@@ -49,9 +57,15 @@ Hammerspoon (Lua)
 
 ## Known characteristics
 
-- ~5 second cold start when whisper-stream first launches (Metal GPU library init)
-- whisper-stream output includes ANSI escape codes (`[2K`) for line overwriting;
-  init.lua strips these before typing text
+- ~5 second cold start when whisper-stream first launches (Metal GPU library init);
+  subsequent launches faster due to macOS shader caching
+- Streaming mode: whisper-stream output includes ANSI escape codes (`[2K`) for line
+  overwriting; init.lua strips these and deduplicates overlapping words at chunk
+  boundaries
+- Streaming mode: whisper hallucinates "Thank you" etc. during silence — just stop
+  dictation when not speaking
+- Batch mode: uses ffmpeg for recording, whisper-cli for transcription. SIGINT to
+  ffmpeg for clean shutdown (writes wav header)
 - Model auto-punctuates (commas, periods, question marks)
 
 ## TODO

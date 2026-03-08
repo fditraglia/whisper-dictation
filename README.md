@@ -7,18 +7,25 @@ text appears in whatever app has focus. Powered by
 
 ## How it works
 
-1. **Hammerspoon** listens for a hotkey and spawns/kills the whisper.cpp stream process
-2. **whisper-stream** captures mic audio via SDL2, transcribes it locally, and prints text to stdout
-3. **Hammerspoon** reads stdout and types the text into the active app via simulated keystrokes
+Two dictation modes, both fully local — no cloud services, no network requests:
 
-Everything runs locally — no cloud services, no network requests.
+**Streaming mode** (Ctrl+D): Hammerspoon spawns `whisper-stream`, which captures
+mic audio via SDL2 and transcribes in ~6-second chunks. Text appears incrementally
+as you speak. Good for quick dictation where you want immediate feedback.
+
+**Batch mode** (Ctrl+Shift+D): Hammerspoon records mic audio to a file via ffmpeg.
+When you press the hotkey again to stop, `whisper-cli` transcribes the entire
+recording in one pass with full context. Higher quality (no chunk boundary
+artifacts), but text appears only after you stop. Processing takes ~4 seconds per
+minute of audio on Apple Silicon.
 
 ## Dependencies
 
 | Dependency | What it does | Install |
 |---|---|---|
-| [whisper.cpp](https://github.com/ggerganov/whisper.cpp) | Speech-to-text engine | Clone + build from source |
+| [whisper.cpp](https://github.com/ggerganov/whisper.cpp) | Speech-to-text engine (`whisper-stream` + `whisper-cli`) | Clone + build from source |
 | [SDL2](https://www.libsdl.org/) | Real-time microphone capture (used by whisper-stream) | `brew install sdl2` |
+| [ffmpeg](https://ffmpeg.org/) | Audio recording for batch mode | `brew install ffmpeg` |
 | [Hammerspoon](https://www.hammerspoon.org/) | macOS automation: hotkeys, process control, keystrokes | `brew install --cask hammerspoon` |
 
 ## Building whisper-stream
@@ -99,14 +106,32 @@ You should see a "Whisper dictation loaded" alert and a 🎤✕ menubar icon.
 
 ## Usage
 
-- **Ctrl+D** — toggle dictation on/off
-- First press spawns `whisper-stream` (~5 second model load), then starts
-  transcribing. Subsequent presses kill/restart the process instantly.
-- A menubar icon shows the current state:
-  - 🎤✕ — idle (process not running)
-  - 🎤⏳ — loading model
-  - 🎤🔴 — actively listening
-- Click the menubar icon → "Quit Whisper" to kill the process and free ~3 GB RAM.
+### Streaming mode: Ctrl+D
+
+- Press **Ctrl+D** to start. Text appears in chunks as you speak.
+- Press **Ctrl+D** again to stop.
+- First press has a ~5 second delay while the model loads. Subsequent
+  starts within the same session are faster (macOS caches GPU shaders).
+- Tip: stop dictation when you stop speaking to avoid silence hallucinations
+  (whisper may output "Thank you" etc. during silence).
+
+### Batch mode: Ctrl+Shift+D
+
+- Press **Ctrl+Shift+D** to start recording.
+- Speak for as long as you like.
+- Press **Ctrl+Shift+D** again to stop. The full recording is transcribed
+  and typed into the active app. Processing takes ~4 seconds per minute.
+- Higher quality than streaming: whisper sees the full audio with complete
+  context, so no chunk boundary artifacts or duplicated words.
+
+### Menubar icon
+
+| Icon | State |
+|---|---|
+| 🎤✕ | Idle (nothing running) |
+| 🎤⏳ | Loading model (streaming) or transcribing (batch) |
+| 🎤🔴 | Streaming — actively listening and typing |
+| 🎤🟠 | Batch — recording audio |
 
 ## Files
 

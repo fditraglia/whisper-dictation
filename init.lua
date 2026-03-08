@@ -1,32 +1,60 @@
 -- whisper-dictation: local speech-to-text via whisper.cpp
--- Press Ctrl+D to toggle dictation on/off
+--
+-- Two modes:
+--   Ctrl+D       — streaming mode: text appears in chunks as you speak
+--   Ctrl+Shift+D — batch mode: records audio, transcribes when you stop (higher quality)
 
-local STREAM_BIN = os.getenv("HOME") .. "/whisper.cpp/build/bin/whisper-stream"
-local MODEL_PATH = os.getenv("HOME") .. "/whisper.cpp/models/ggml-large-v3.bin"
+local STREAM_BIN  = os.getenv("HOME") .. "/whisper.cpp/build/bin/whisper-stream"
+local WHISPER_CLI = os.getenv("HOME") .. "/whisper.cpp/build/bin/whisper-cli"
+local MODEL_PATH  = os.getenv("HOME") .. "/whisper.cpp/models/ggml-large-v3.bin"
+local AUDIO_FILE  = "/tmp/whisper-dictation-batch.wav"
 
 local streamTask = nil
+local batchRecordTask = nil
 local menubar = nil
 local isListening = false
+local currentMode = nil -- "stream" or "batch"
 
--- Menubar setup
+--------------------------------------------------------------------------------
+-- Menubar
+--------------------------------------------------------------------------------
+
 local function initMenubar()
     menubar = hs.menubar.new()
     menubar:setTitle("🎤✕")
     menubar:setMenu(function()
         local items = {}
-        if streamTask then
+        if streamTask or batchRecordTask then
+            local status = "Listening"
+            if currentMode == "stream" then
+                status = "Streaming..."
+            elseif currentMode == "batch" then
+                status = "Recording..."
+            end
+            table.insert(items, { title = status, disabled = true })
+            table.insert(items, { title = "-" })
             table.insert(items, {
-                title = isListening and "Listening..." or "Paused",
+                title = "Stop",
+                fn = function()
+                    if currentMode == "stream" then
+                        stopStream(false)
+                    elseif currentMode == "batch" then
+                        stopBatch()
+                    end
+                end,
+            })
+        else
+            table.insert(items, {
+                title = "Idle",
                 disabled = true,
             })
             table.insert(items, { title = "-" })
             table.insert(items, {
-                title = "Quit Whisper",
-                fn = function() stopStream(true) end,
+                title = "Ctrl+D — stream mode",
+                disabled = true,
             })
-        else
             table.insert(items, {
-                title = "Idle (press Ctrl+D)",
+                title = "Ctrl+Shift+D — batch mode",
                 disabled = true,
             })
         end
@@ -34,15 +62,16 @@ local function initMenubar()
     end)
 end
 
--- Buffer for accumulating stdout between newlines.
--- whisper-stream overwrites the same line with partial transcriptions (via
--- ANSI \33[2K\r). Only the last version before a newline is the finalized
--- text. We accumulate into outputBuffer and only type when we see \n.
+--------------------------------------------------------------------------------
+-- Streaming mode (Ctrl+D)
+-- Text appears in ~6-second chunks as you speak. Lower quality due to limited
+-- context per chunk, but provides immediate feedback.
+--------------------------------------------------------------------------------
+
 local outputBuffer = ""
 local needsSpace = false
 local lastChunkWords = {} -- last few words of previous chunk, for dedup
 
--- Split a string into words
 local function splitWords(s)
     local words = {}
     for w in s:gmatch("%S+") do
@@ -60,7 +89,6 @@ local function dedup(text)
     local words = splitWords(text)
     if #words == 0 then return text end
 
-    -- Check for overlap of 1-3 words
     local maxOverlap = math.min(3, #lastChunkWords, #words)
     local bestOverlap = 0
 
@@ -80,7 +108,6 @@ local function dedup(text)
     end
 
     if bestOverlap > 0 then
-        -- Remove the overlapping words from the start
         local stripped = {}
         for i = bestOverlap + 1, #words do
             table.insert(stripped, words[i])
@@ -91,16 +118,15 @@ local function dedup(text)
     return text
 end
 
-local function processOutput(_, stdout)
+local function processStreamOutput(_, stdout)
     if not stdout then return end
     outputBuffer = outputBuffer .. stdout
 
-    -- Only process complete lines (text ending with \n)
     while outputBuffer:find("\n") do
         local line, rest = outputBuffer:match("^(.-)\n(.*)$")
         outputBuffer = rest
 
-        -- The line contains multiple \r-separated overwrites; take the last one
+        -- Take the last \r-separated segment (final version of overwritten line)
         local final = line
         for segment in line:gmatch("[^\r]+") do
             final = segment
@@ -111,11 +137,9 @@ local function processOutput(_, stdout)
         final = final:match("^%s*(.-)%s*$")
 
         if #final > 0 then
-            -- Remove words duplicated from the previous chunk's overlap
             final = dedup(final)
 
             if #final > 0 then
-                -- Add a leading space to separate from the previous chunk
                 if needsSpace and not final:match("^[%s%p]") then
                     hs.eventtap.keyStrokes(" " .. final)
                 else
@@ -124,17 +148,16 @@ local function processOutput(_, stdout)
                 needsSpace = true
             end
 
-            -- Remember the last few words for next dedup
             local words = splitWords(final)
             lastChunkWords = words
         end
     end
 end
 
--- Start the whisper-stream process
 local function startStream()
-    if streamTask then return end
+    if streamTask or batchRecordTask then return end
 
+    currentMode = "stream"
     menubar:setTitle("🎤⏳")
     outputBuffer = ""
     needsSpace = false
@@ -149,54 +172,141 @@ local function startStream()
     }
 
     streamTask = hs.task.new(STREAM_BIN, function(exitCode, _, _)
-        -- Callback when process exits
         streamTask = nil
         isListening = false
+        currentMode = nil
         menubar:setTitle("🎤✕")
     end, function(task, stdout, stderr)
-        -- Streaming callback for stdout/stderr
         if stdout and #stdout > 0 then
-            -- Detect when model is loaded and streaming starts
             if not isListening and stdout:find("%[Start speaking%]") then
                 isListening = true
                 menubar:setTitle("🎤🔴")
-                hs.alert.show("Dictation ON", 1)
+                hs.alert.show("Streaming ON", 1)
             end
             if isListening then
-                processOutput(task, stdout)
+                processStreamOutput(task, stdout)
             end
         end
-        return true -- keep streaming
+        return true
     end, args)
 
     streamTask:start()
 end
 
--- Stop the whisper-stream process
 function stopStream(full)
     if streamTask then
         streamTask:terminate()
         streamTask = nil
     end
     isListening = false
+    currentMode = nil
     menubar:setTitle("🎤✕")
     if full then
         hs.alert.show("Whisper quit", 1)
     else
-        hs.alert.show("Dictation OFF", 1)
+        hs.alert.show("Streaming OFF", 1)
     end
 end
 
--- Toggle dictation
-local function toggleDictation()
-    if isListening then
+local function toggleStream()
+    if currentMode == "stream" then
         stopStream(false)
-    else
+    elseif currentMode == nil then
         startStream()
     end
+    -- If batch mode is active, ignore stream hotkey
 end
 
+--------------------------------------------------------------------------------
+-- Batch mode (Ctrl+Shift+D)
+-- Records audio to a file. When stopped, transcribes the entire recording in
+-- one pass with full context — higher quality, no chunk boundary artifacts.
+-- Processing takes ~4 seconds per minute of audio on Apple Silicon.
+--------------------------------------------------------------------------------
+
+local function startBatch()
+    if streamTask or batchRecordTask then return end
+
+    currentMode = "batch"
+    isListening = true
+    menubar:setTitle("🎤🟠")
+    hs.alert.show("Recording... (Ctrl+Shift+D to stop)", 2)
+
+    -- Record mic audio to wav file (16kHz mono, what whisper expects)
+    local args = {
+        "-f", "avfoundation",
+        "-i", ":0",
+        "-ar", "16000",
+        "-ac", "1",
+        "-y",  -- overwrite existing file
+        AUDIO_FILE,
+    }
+
+    batchRecordTask = hs.task.new("/opt/homebrew/bin/ffmpeg", function(exitCode, _, _)
+        -- This callback fires when ffmpeg exits (after we terminate it)
+        batchRecordTask = nil
+    end, args)
+
+    batchRecordTask:start()
+end
+
+local function stopBatch()
+    if not batchRecordTask then return end
+
+    -- Stop recording
+    batchRecordTask:interrupt() -- SIGINT = clean ffmpeg shutdown, writes file header
+    batchRecordTask = nil
+    isListening = false
+    menubar:setTitle("🎤⏳")
+    hs.alert.show("Transcribing...", 2)
+
+    -- Short delay to let ffmpeg finish writing the file
+    hs.timer.doAfter(0.5, function()
+        -- Transcribe the recording
+        local args = {
+            "-m", MODEL_PATH,
+            "-f", AUDIO_FILE,
+            "--no-timestamps",
+            "-l", "en",
+        }
+
+        hs.task.new(WHISPER_CLI, function(exitCode, stdout, stderr)
+            currentMode = nil
+            menubar:setTitle("🎤✕")
+
+            if exitCode == 0 and stdout and #stdout > 0 then
+                -- Trim whitespace and type the result
+                local text = stdout:match("^%s*(.-)%s*$")
+                if #text > 0 then
+                    hs.eventtap.keyStrokes(text)
+                    hs.alert.show("Batch done", 1)
+                else
+                    hs.alert.show("No speech detected", 1)
+                end
+            else
+                hs.alert.show("Transcription failed", 2)
+            end
+
+            -- Clean up the audio file
+            os.remove(AUDIO_FILE)
+        end, args):start()
+    end)
+end
+
+local function toggleBatch()
+    if currentMode == "batch" then
+        stopBatch()
+    elseif currentMode == nil then
+        startBatch()
+    end
+    -- If stream mode is active, ignore batch hotkey
+end
+
+--------------------------------------------------------------------------------
 -- Initialize
+--------------------------------------------------------------------------------
+
 initMenubar()
-hs.hotkey.bind({"ctrl"}, "D", toggleDictation)
+hs.hotkey.bind({"ctrl"}, "D", toggleStream)
+hs.hotkey.bind({"ctrl", "shift"}, "D", toggleBatch)
 hs.alert.show("Whisper dictation loaded", 2)
