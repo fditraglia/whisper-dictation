@@ -6,7 +6,8 @@
 
 local STREAM_BIN  = os.getenv("HOME") .. "/whisper.cpp/build/bin/whisper-stream"
 local WHISPER_CLI = os.getenv("HOME") .. "/whisper.cpp/build/bin/whisper-cli"
-local MODEL_PATH  = os.getenv("HOME") .. "/whisper.cpp/models/ggml-large-v3.bin"
+local STREAM_MODEL = os.getenv("HOME") .. "/whisper.cpp/models/ggml-large-v3-turbo.bin"
+local BATCH_MODEL  = os.getenv("HOME") .. "/whisper.cpp/models/ggml-large-v2.bin"
 local AUDIO_FILE  = "/tmp/whisper-dictation-batch.wav"
 
 local streamTask = nil
@@ -164,7 +165,7 @@ local function startStream()
     lastChunkWords = {}
 
     local args = {
-        "-m", MODEL_PATH,
+        "-m", STREAM_MODEL,
         "--step", "3000",
         "--length", "10000",
         "--keep", "200",
@@ -193,18 +194,61 @@ local function startStream()
     streamTask:start()
 end
 
+-- Flush any pending text from the output buffer when stopping.
+-- whisper-stream may have \r-separated intermediate updates that
+-- haven't been finalized with \n yet — grab the latest one.
+local function flushStreamBuffer()
+    local pending = outputBuffer
+    outputBuffer = ""
+
+    if #pending == 0 then return end
+
+    -- Take the last \r-separated segment (most recent transcription)
+    local final = pending
+    for segment in pending:gmatch("[^\r\n]+") do
+        final = segment
+    end
+
+    -- Strip ANSI escape codes and trim
+    final = final:gsub("\27%[[%d;]*[A-Za-z]", "")
+    final = final:match("^%s*(.-)%s*$")
+
+    if #final > 0 then
+        final = dedup(final)
+        if #final > 0 then
+            if needsSpace and not final:match("^[%s%p]") then
+                hs.eventtap.keyStrokes(" " .. final)
+            else
+                hs.eventtap.keyStrokes(final)
+            end
+        end
+    end
+end
+
 function stopStream(full)
     if streamTask then
-        streamTask:terminate()
-        streamTask = nil
-    end
-    isListening = false
-    currentMode = nil
-    menubar:setTitle("🎤✕")
-    if full then
-        hs.alert.show("Whisper quit", 1)
+        -- SIGINT gives whisper-stream a chance to flush final output
+        streamTask:interrupt()
+        -- Brief delay to let final stdout arrive via callback, then flush
+        hs.timer.doAfter(1.0, function()
+            if streamTask then
+                streamTask:terminate()
+                streamTask = nil
+            end
+            flushStreamBuffer()
+            isListening = false
+            currentMode = nil
+            menubar:setTitle("🎤✕")
+            if full then
+                hs.alert.show("Whisper quit", 1)
+            else
+                hs.alert.show("Streaming OFF", 1)
+            end
+        end)
     else
-        hs.alert.show("Streaming OFF", 1)
+        isListening = false
+        currentMode = nil
+        menubar:setTitle("🎤✕")
     end
 end
 
@@ -264,7 +308,7 @@ local function stopBatch()
     hs.timer.doAfter(0.5, function()
         -- Transcribe the recording
         local args = {
-            "-m", MODEL_PATH,
+            "-m", BATCH_MODEL,
             "-f", AUDIO_FILE,
             "--no-timestamps",
             "-l", "auto",

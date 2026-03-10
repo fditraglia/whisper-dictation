@@ -39,7 +39,7 @@ Batch (Ctrl+Shift+D):
 
 - **Mac**: Apple Silicon, 36 GB RAM
 - **whisper.cpp**: `~/whisper.cpp/`, binaries at `~/whisper.cpp/build/bin/`
-- **Model**: `ggml-large-v3.bin` (2.9 GB)
+- **Models**: `ggml-large-v3-turbo.bin` (1.5 GB, streaming) and `ggml-large-v2.bin` (2.9 GB, batch)
 
 ## Design decisions
 
@@ -49,6 +49,10 @@ Batch (Ctrl+Shift+D):
 - **Batch mode rationale**: streaming has inherent chunk boundary issues (duplicated
   words, limited context). Batch transcribes the full recording in one pass — higher
   quality, simpler code, ~4s/min processing delay is acceptable.
+- **Model split rationale**: v3-turbo (4 decoder layers) for streaming — fast enough
+  to keep up with speech, occasional errors acceptable in live context. v2 (32 layers)
+  for batch — no hallucinations during silence, rock-solid for unattended transcription.
+  v3 was retired: it hallucinates during silence and offers no advantage over v2 for batch.
 
 ## Key files
 
@@ -66,13 +70,15 @@ Batch (Ctrl+Shift+D):
   dictation when not speaking
 - Batch mode: uses ffmpeg for recording, whisper-cli for transcription. SIGINT to
   ffmpeg for clean shutdown (writes wav header)
+- Streaming mode: on stop, SIGINT + 1s delay flushes remaining text from
+  whisper-stream's buffer before cleanup (avoids losing the tail end of speech)
 - Model auto-punctuates (commas, periods, question marks)
 
 ## TODO
 
-- **Chunk tuning**: experiment with `--step` and `--length` values to balance latency
-  vs. transcription quality. Larger steps give the model more context (fewer
-  within-chunk artifacts like "artist artist's") but delay output.
+- **Chunk tuning**: experiment with `--step` and `--length` values for turbo model.
+  Turbo's speed may allow longer windows (12-15s) for better per-chunk context without
+  falling behind, or shorter steps (2s) for more frequent updates.
 - **Corrections dictionary**: a simple text file mapping common mistranscriptions
   to correct words (e.g., proper names). Applied as post-processing before typing.
   Similar to what Wispr Flow calls "vocabulary learning" — no model fine-tuning,
